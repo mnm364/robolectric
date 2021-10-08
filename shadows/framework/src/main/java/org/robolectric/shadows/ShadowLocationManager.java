@@ -4,7 +4,6 @@ import static android.location.LocationManager.GPS_PROVIDER;
 import static android.location.LocationManager.NETWORK_PROVIDER;
 import static android.location.LocationManager.PASSIVE_PROVIDER;
 import static android.os.Build.VERSION_CODES.KITKAT;
-import static android.os.Build.VERSION_CODES.LOLLIPOP;
 import static android.os.Build.VERSION_CODES.N;
 import static android.os.Build.VERSION_CODES.P;
 import static android.os.Build.VERSION_CODES.Q;
@@ -42,6 +41,7 @@ import android.provider.Settings.Secure;
 import android.text.TextUtils;
 import androidx.annotation.GuardedBy;
 import androidx.annotation.Nullable;
+import androidx.collection.ArrayMap;
 import com.google.common.base.Preconditions;
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
@@ -52,10 +52,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
@@ -78,15 +78,15 @@ public class ShadowLocationManager {
 
   /** Properties of a provider. */
   public static class ProviderProperties {
-    private final boolean requiresNetwork;
-    private final boolean requiresSatellite;
-    private final boolean requiresCell;
-    private final boolean hasMonetaryCost;
-    private final boolean supportsAltitude;
-    private final boolean supportsSpeed;
-    private final boolean supportsBearing;
-    private final int powerRequirement;
-    private final int accuracy;
+    final boolean requiresNetwork;
+    final boolean requiresSatellite;
+    final boolean requiresCell;
+    final boolean hasMonetaryCost;
+    final boolean supportsAltitude;
+    final boolean supportsSpeed;
+    final boolean supportsBearing;
+    final int powerRequirement;
+    final int accuracy;
 
     public ProviderProperties(
         boolean requiresNetwork,
@@ -121,7 +121,7 @@ public class ShadowLocationManager {
       this.accuracy = criteria.getAccuracy();
     }
 
-    private boolean meetsCriteria(Criteria criteria) {
+    boolean meetsCriteria(Criteria criteria) {
       if (criteria.getAccuracy() != Criteria.NO_REQUIREMENT && criteria.getAccuracy() < accuracy) {
         return false;
       }
@@ -397,12 +397,12 @@ public class ShadowLocationManager {
       return null;
     }
 
-    return providerEntry.lastLocation;
+    return providerEntry.getLastLocation();
   }
 
   /** Sets the last known location for the given provider. */
   public void setLastKnownLocation(String provider, @Nullable Location location) {
-    getOrCreateProviderEntry(provider).lastLocation = location;
+    getOrCreateProviderEntry(provider).setLastLocation(location);
   }
 
   @Implementation(minSdk = R)
@@ -596,7 +596,7 @@ public class ShadowLocationManager {
         bestProvider, new LocationRequest(minTime, minDistance), pendingIntent);
   }
 
-  @Implementation(minSdk = LOLLIPOP)
+  @Implementation(minSdk = KITKAT)
   protected void requestLocationUpdates(
       @Nullable Object request, Object executorOrListener, Object listenerOrLooper) {
     if (request == null) {
@@ -624,7 +624,7 @@ public class ShadowLocationManager {
     }
   }
 
-  @Implementation(minSdk = LOLLIPOP)
+  @Implementation(minSdk = KITKAT)
   protected void requestLocationUpdates(@Nullable Object request, Object pendingIntent) {
     if (request == null) {
       request = android.location.LocationRequest.create();
@@ -901,12 +901,15 @@ public class ShadowLocationManager {
     synchronized (providers) {
       HashSet<LocationListener> listeners = new HashSet<>();
       for (ProviderEntry providerEntry : providers) {
-        for (ProviderEntry.ListenerEntry listenerEntry : providerEntry.listeners) {
-          LocationTransport transport = listenerEntry.transport;
-          if (transport instanceof ListenerTransport) {
-            listeners.add(((ListenerTransport) transport).locationListener);
-          }
-        }
+        listeners.addAll(
+            providerEntry.mapListeners(
+                entry -> {
+                  if (entry.key instanceof LocationListener) {
+                    return (LocationListener) entry.key;
+                  } else {
+                    return null;
+                  }
+                }));
       }
       return new ArrayList<>(listeners);
     }
@@ -925,14 +928,14 @@ public class ShadowLocationManager {
       return Collections.emptyList();
     }
 
-    ArrayList<LocationListener> listeners = new ArrayList<>(providerEntry.listeners.size());
-    for (ProviderEntry.ListenerEntry listenerEntry : providerEntry.listeners) {
-      LocationTransport transport = listenerEntry.transport;
-      if (transport instanceof ListenerTransport) {
-        listeners.add(((ListenerTransport) transport).locationListener);
-      }
-    }
-    return listeners;
+    return providerEntry.mapListeners(
+        entry -> {
+          if (entry.key instanceof LocationListener) {
+            return (LocationListener) entry.key;
+          } else {
+            return null;
+          }
+        });
   }
 
   /**
@@ -944,16 +947,19 @@ public class ShadowLocationManager {
   @Deprecated
   public List<PendingIntent> getLocationUpdatePendingIntents() {
     synchronized (providers) {
-      HashSet<PendingIntent> pendingIntents = new HashSet<>();
+      HashSet<PendingIntent> listeners = new HashSet<>();
       for (ProviderEntry providerEntry : providers) {
-        for (ProviderEntry.ListenerEntry listenerEntry : providerEntry.listeners) {
-          LocationTransport transport = listenerEntry.transport;
-          if (transport instanceof PendingIntentTransport) {
-            pendingIntents.add(((PendingIntentTransport) transport).pendingIntent);
-          }
-        }
+        listeners.addAll(
+            providerEntry.mapListeners(
+                entry -> {
+                  if (entry.key instanceof PendingIntent) {
+                    return (PendingIntent) entry.key;
+                  } else {
+                    return null;
+                  }
+                }));
       }
-      return new ArrayList<>(pendingIntents);
+      return new ArrayList<>(listeners);
     }
   }
 
@@ -970,17 +976,17 @@ public class ShadowLocationManager {
       return Collections.emptyList();
     }
 
-    ArrayList<PendingIntent> pendingIntents = new ArrayList<>(providerEntry.listeners.size());
-    for (ProviderEntry.ListenerEntry listenerEntry : providerEntry.listeners) {
-      LocationTransport transport = listenerEntry.transport;
-      if (transport instanceof PendingIntentTransport) {
-        pendingIntents.add(((PendingIntentTransport) transport).pendingIntent);
-      }
-    }
-    return pendingIntents;
+    return providerEntry.mapListeners(
+        entry -> {
+          if (entry.key instanceof PendingIntent) {
+            return (PendingIntent) entry.key;
+          } else {
+            return null;
+          }
+        });
   }
 
-  private Context getContext() {
+  Context getContext() {
     return ReflectionHelpers.getField(realLocationManager, "mContext");
   }
 
@@ -1051,15 +1057,25 @@ public class ShadowLocationManager {
   //    programmatically, and should never be determined by LOCATION_PROVIDERS_ALLOWED.
   private final class ProviderEntry {
     private final String name;
-    private final CopyOnWriteArraySet<ListenerEntry> listeners;
 
-    @Nullable private volatile ProviderProperties properties;
-    private boolean enabled;
-    private Location lastLocation;
+    @GuardedBy("listeners")
+    final ArrayMap<Object, ListenerEntry> listeners;
+
+    @GuardedBy("listeners")
+    @Nullable
+    ProviderProperties properties;
+
+    @GuardedBy("listeners")
+    boolean enabled;
+
+    @GuardedBy("listeners")
+    @Nullable
+    Location lastLocation;
 
     private ProviderEntry(String name, @Nullable ProviderProperties properties) {
       this.name = name;
-      listeners = new CopyOnWriteArraySet<>();
+      listeners = new ArrayMap<>();
+
       this.properties = properties;
 
       switch (name) {
@@ -1081,7 +1097,9 @@ public class ShadowLocationManager {
 
     public boolean isEnabled() {
       if (PASSIVE_PROVIDER.equals(name) || RuntimeEnvironment.getApiLevel() >= Q) {
-        return enabled;
+        synchronized (listeners) {
+          return enabled;
+        }
       } else {
         String allowedProviders =
             Secure.getString(getContext().getContentResolver(), LOCATION_PROVIDERS_ALLOWED);
@@ -1094,105 +1112,133 @@ public class ShadowLocationManager {
     }
 
     public void setEnabled(boolean enabled) {
-      if (PASSIVE_PROVIDER.equals(name)) {
-        // the passive provider cannot be disabled, but the passive provider didn't exist in
-        // previous versions of this shadow. for backwards compatibility, we let the passive
-        // provider be disabled. this also help emulate the situation where an app only has COARSE
-        // permissions, which this shadow normally can't emulate.
-        this.enabled = enabled;
-        return;
-      }
-
-      int oldLocationMode = getLocationMode();
-      int newLocationMode = oldLocationMode;
-      if (RuntimeEnvironment.getApiLevel() < P) {
-        if (GPS_PROVIDER.equals(name)) {
-          if (enabled) {
-            switch (oldLocationMode) {
-              case LOCATION_MODE_OFF:
-                newLocationMode = LOCATION_MODE_SENSORS_ONLY;
-                break;
-              case LOCATION_MODE_BATTERY_SAVING:
-                newLocationMode = LOCATION_MODE_HIGH_ACCURACY;
-                break;
-              default:
-                break;
-            }
-          } else {
-            switch (oldLocationMode) {
-              case LOCATION_MODE_SENSORS_ONLY:
-                newLocationMode = LOCATION_MODE_OFF;
-                break;
-              case LOCATION_MODE_HIGH_ACCURACY:
-                newLocationMode = LOCATION_MODE_BATTERY_SAVING;
-                break;
-              default:
-                break;
-            }
-          }
-        } else if (NETWORK_PROVIDER.equals(name)) {
-          if (enabled) {
-            switch (oldLocationMode) {
-              case LOCATION_MODE_OFF:
-                newLocationMode = LOCATION_MODE_BATTERY_SAVING;
-                break;
-              case LOCATION_MODE_SENSORS_ONLY:
-                newLocationMode = LOCATION_MODE_HIGH_ACCURACY;
-                break;
-              default:
-                break;
-            }
-          } else {
-            switch (oldLocationMode) {
-              case LOCATION_MODE_BATTERY_SAVING:
-                newLocationMode = LOCATION_MODE_OFF;
-                break;
-              case LOCATION_MODE_HIGH_ACCURACY:
-                newLocationMode = LOCATION_MODE_SENSORS_ONLY;
-                break;
-              default:
-                break;
-            }
-          }
-        }
-      }
-
-      if (newLocationMode != oldLocationMode) {
-        // this sets LOCATION_MODE and LOCATION_PROVIDERS_ALLOWED
-        setLocationModeInternal(newLocationMode);
-      } else if (RuntimeEnvironment.getApiLevel() >= Q) {
-        if (enabled == this.enabled) {
+      synchronized (listeners) {
+        if (PASSIVE_PROVIDER.equals(name)) {
+          // the passive provider cannot be disabled, but the passive provider didn't exist in
+          // previous versions of this shadow. for backwards compatibility, we let the passive
+          // provider be disabled. this also help emulate the situation where an app only has COARSE
+          // permissions, which this shadow normally can't emulate.
+          this.enabled = enabled;
           return;
         }
 
-        this.enabled = enabled;
-        // set LOCATION_PROVIDERS_ALLOWED directly, without setting LOCATION_MODE. do this even
-        // though LOCATION_PROVIDERS_ALLOWED is not the source of truth - we keep it up to date, but
-        // ignore any direct writes to it
-        ShadowSettings.ShadowSecure.updateEnabledProviders(
-            getContext().getContentResolver(), name, enabled);
-      } else {
-        if (enabled == this.enabled) {
-          return;
+        int oldLocationMode = getLocationMode();
+        int newLocationMode = oldLocationMode;
+        if (RuntimeEnvironment.getApiLevel() < P) {
+          if (GPS_PROVIDER.equals(name)) {
+            if (enabled) {
+              switch (oldLocationMode) {
+                case LOCATION_MODE_OFF:
+                  newLocationMode = LOCATION_MODE_SENSORS_ONLY;
+                  break;
+                case LOCATION_MODE_BATTERY_SAVING:
+                  newLocationMode = LOCATION_MODE_HIGH_ACCURACY;
+                  break;
+                default:
+                  break;
+              }
+            } else {
+              switch (oldLocationMode) {
+                case LOCATION_MODE_SENSORS_ONLY:
+                  newLocationMode = LOCATION_MODE_OFF;
+                  break;
+                case LOCATION_MODE_HIGH_ACCURACY:
+                  newLocationMode = LOCATION_MODE_BATTERY_SAVING;
+                  break;
+                default:
+                  break;
+              }
+            }
+          } else if (NETWORK_PROVIDER.equals(name)) {
+            if (enabled) {
+              switch (oldLocationMode) {
+                case LOCATION_MODE_OFF:
+                  newLocationMode = LOCATION_MODE_BATTERY_SAVING;
+                  break;
+                case LOCATION_MODE_SENSORS_ONLY:
+                  newLocationMode = LOCATION_MODE_HIGH_ACCURACY;
+                  break;
+                default:
+                  break;
+              }
+            } else {
+              switch (oldLocationMode) {
+                case LOCATION_MODE_BATTERY_SAVING:
+                  newLocationMode = LOCATION_MODE_OFF;
+                  break;
+                case LOCATION_MODE_HIGH_ACCURACY:
+                  newLocationMode = LOCATION_MODE_SENSORS_ONLY;
+                  break;
+                default:
+                  break;
+              }
+            }
+          }
         }
 
-        this.enabled = enabled;
-        // set LOCATION_PROVIDERS_ALLOWED directly, without setting LOCATION_MODE
-        ShadowSettings.ShadowSecure.updateEnabledProviders(
-            getContext().getContentResolver(), name, enabled);
-      }
+        if (newLocationMode != oldLocationMode) {
+          // this sets LOCATION_MODE and LOCATION_PROVIDERS_ALLOWED
+          setLocationModeInternal(newLocationMode);
+        } else if (RuntimeEnvironment.getApiLevel() >= Q) {
+          if (enabled == this.enabled) {
+            return;
+          }
 
-      // fire listeners
-      for (ProviderEntry.ListenerEntry listener : listeners) {
-        listener.invokeOnProviderEnabled(name, enabled);
+          this.enabled = enabled;
+          // set LOCATION_PROVIDERS_ALLOWED directly, without setting LOCATION_MODE. do this even
+          // though LOCATION_PROVIDERS_ALLOWED is not the source of truth - we keep it up to date,
+          // but ignore any direct writes to it
+          ShadowSettings.ShadowSecure.updateEnabledProviders(
+              getContext().getContentResolver(), name, enabled);
+        } else {
+          if (enabled == this.enabled) {
+            return;
+          }
+
+          this.enabled = enabled;
+          // set LOCATION_PROVIDERS_ALLOWED directly, without setting LOCATION_MODE
+          ShadowSettings.ShadowSecure.updateEnabledProviders(
+              getContext().getContentResolver(), name, enabled);
+        }
+
+        for (int i = 0; i < listeners.size(); i++) {
+          listeners.valueAt(i).invokeOnProviderEnabled(name, enabled);
+        }
+      }
+    }
+
+    @Nullable
+    public Location getLastLocation() {
+      synchronized (listeners) {
+        return lastLocation;
+      }
+    }
+
+    public void setLastLocation(@Nullable Location location) {
+      synchronized (listeners) {
+        lastLocation = location;
       }
     }
 
     public void simulateLocation(Location location) {
-      lastLocation = new Location(location);
+      synchronized (listeners) {
+        lastLocation = new Location(location);
+        for (int i = 0; i < listeners.size(); i++) {
+          listeners.valueAt(i).invokeOnLocation(location);
+        }
+      }
+    }
 
-      for (ListenerEntry listenerEntry : listeners) {
-        listenerEntry.simulateLocation(location);
+    public <T> List<T> mapListeners(Function<ListenerEntry, T> function) {
+      synchronized (listeners) {
+        ArrayList<T> list = new ArrayList<>(listeners.size());
+        for (ListenerEntry entry : listeners.values()) {
+          T item = function.apply(entry);
+          if (item != null) {
+            list.add(item);
+          }
+        }
+        return list;
       }
     }
 
@@ -1201,28 +1247,31 @@ public class ShadowLocationManager {
         return false;
       }
 
-      ProviderProperties myProperties = properties;
-      if (myProperties == null) {
-        return false;
+      synchronized (listeners) {
+        if (properties == null) {
+          return false;
+        }
+        return properties.meetsCriteria(criteria);
       }
-      return myProperties.meetsCriteria(criteria);
     }
 
+    @Nullable
     public Object createRealProperties() {
-      ProviderProperties myProperties = properties;
-      if (myProperties == null) {
-        return null;
-      } else {
-        return ShadowLocationManager.this.createRealProperties(
-            myProperties.requiresNetwork,
-            myProperties.requiresSatellite,
-            myProperties.requiresCell,
-            myProperties.hasMonetaryCost,
-            myProperties.supportsAltitude,
-            myProperties.supportsSpeed,
-            myProperties.supportsBearing,
-            myProperties.powerRequirement,
-            myProperties.accuracy);
+      synchronized (listeners) {
+        if (properties == null) {
+          return null;
+        } else {
+          return ShadowLocationManager.this.createRealProperties(
+              properties.requiresNetwork,
+              properties.requiresSatellite,
+              properties.requiresCell,
+              properties.hasMonetaryCost,
+              properties.supportsAltitude,
+              properties.supportsSpeed,
+              properties.supportsBearing,
+              properties.powerRequirement,
+              properties.accuracy);
+        }
       }
     }
 
@@ -1230,28 +1279,31 @@ public class ShadowLocationManager {
         LocationListener listener,
         ShadowLocationManager.LocationRequest request,
         Executor executor) {
-      add(new ListenerEntry(listener, request, new ListenerTransport(executor, listener)));
+      addListener(
+          listener,
+          new ListenerEntry(listener, request, new ListenerTransport(executor, listener)));
     }
 
     public void addListener(
         PendingIntent pendingIntent, ShadowLocationManager.LocationRequest request) {
-      add(
+      addListener(
+          pendingIntent,
           new ListenerEntry(
               pendingIntent, request, new PendingIntentTransport(pendingIntent, getContext())));
     }
 
-    private void add(ListenerEntry entry) {
-      if (!enabled) {
-        entry.invokeOnProviderEnabled(name, false);
+    private void addListener(Object key, ListenerEntry entry) {
+      synchronized (listeners) {
+        listeners.put(key, entry);
+        if (!enabled) {
+          entry.invokeOnProviderEnabled(name, false);
+        }
       }
-      listeners.add(entry);
     }
 
     public void removeListener(Object key) {
-      for (ListenerEntry listenerEntry : listeners) {
-        if (listenerEntry.key == key) {
-          listeners.remove(listenerEntry);
-        }
+      synchronized (listeners) {
+        listeners.remove(key);
       }
     }
 
@@ -1281,7 +1333,7 @@ public class ShadowLocationManager {
       private Location lastDeliveredLocation;
       private int numDeliveries;
 
-      private ListenerEntry(
+      ListenerEntry(
           Object key, ShadowLocationManager.LocationRequest request, LocationTransport transport) {
         if (key == null) {
           throw new IllegalArgumentException();
@@ -1292,7 +1344,7 @@ public class ShadowLocationManager {
         this.transport = transport;
       }
 
-      public void simulateLocation(Location location) {
+      public void invokeOnLocation(Location location) {
         if (lastDeliveredLocation != null) {
           if (location.getTime() - lastDeliveredLocation.getTime()
               < request.minUpdateIntervalMillis) {
@@ -1306,39 +1358,28 @@ public class ShadowLocationManager {
         lastDeliveredLocation = new Location(location);
 
         if (++numDeliveries >= request.maxUpdates) {
-          listeners.remove(this);
+          synchronized (listeners) {
+            listeners.remove(key, this);
+          }
         }
 
         try {
           transport.onLocation(location);
-        } catch (Exception e) {
-          removeListener(key);
+        } catch (CanceledException e) {
+          synchronized (listeners) {
+            listeners.remove(key, this);
+          }
         }
       }
 
       public void invokeOnProviderEnabled(String provider, boolean enabled) {
         try {
           transport.onProviderEnabled(provider, enabled);
-        } catch (Exception e) {
-          removeListener(key);
+        } catch (CanceledException e) {
+          synchronized (listeners) {
+            listeners.remove(key, this);
+          }
         }
-      }
-
-      @Override
-      public boolean equals(Object o) {
-        if (this == o) {
-          return true;
-        }
-        if (!(o instanceof ListenerEntry)) {
-          return false;
-        }
-        ListenerEntry that = (ListenerEntry) o;
-        return key == that.key;
-      }
-
-      @Override
-      public int hashCode() {
-        return Objects.hashCode(key);
       }
     }
   }
@@ -1411,9 +1452,9 @@ public class ShadowLocationManager {
   }
 
   private interface LocationTransport {
-    void onLocation(Location location) throws Exception;
+    void onLocation(Location location) throws CanceledException;
 
-    void onProviderEnabled(String provider, boolean enabled) throws Exception;
+    void onProviderEnabled(String provider, boolean enabled) throws CanceledException;
   }
 
   private static final class ListenerTransport implements LocationTransport {
