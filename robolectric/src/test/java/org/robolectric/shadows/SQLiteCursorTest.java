@@ -39,6 +39,7 @@ public class SQLiteCursorTest {
   @After
   public void tearDown() {
     database.close();
+    cursor.close();
   }
 
   @Test
@@ -482,6 +483,7 @@ public class SQLiteCursorTest {
 
   private void setupEmptyResult() {
     database.execSQL("DELETE FROM table_name;");
+    cursor.close();
     cursor = createCursor();
   }
 
