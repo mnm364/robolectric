@@ -1,12 +1,15 @@
 package org.robolectric.shadows;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 
 import android.database.Cursor;
 import android.database.MergeCursor;
 import android.database.sqlite.SQLiteCursor;
 import android.database.sqlite.SQLiteDatabase;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import dalvik.system.CloseGuard;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -52,6 +55,16 @@ public class ShadowMergeCursorTest {
             "SELECT * FROM table_2;");
   }
 
+  @After
+  public void tearDown() throws Exception {
+    database.close();
+    if (cursor != null) {
+      cursor.close();
+    }
+    dbCursor1.close();
+    dbCursor2.close();
+  }
+
   private SQLiteCursor setupTable(final String createSql, final String[] insertions, final String selectSql) {
     database.execSQL(createSql);
 
@@ -65,9 +78,16 @@ public class ShadowMergeCursorTest {
     return (SQLiteCursor) cursor;
   }
 
-  @Test(expected = NullPointerException.class)
+  @Test
   public void shouldThrowIfConstructorArgumentIsNull() {
-    new MergeCursor(null);
+    CloseGuard.Reporter originalReporter = CloseGuard.getReporter();
+    try {
+      // squelch spurious CloseGuard error
+      CloseGuard.setReporter((s, throwable) -> {});
+      assertThrows(NullPointerException.class, () -> new MergeCursor(null));
+    } finally {
+      CloseGuard.setReporter(originalReporter);
+    }
   }
 
   @Test
@@ -77,6 +97,7 @@ public class ShadowMergeCursorTest {
     assertThat(cursor.getCount()).isEqualTo(0);
     assertThat(cursor.moveToFirst()).isFalse();
     assertThat(cursor.getColumnNames()).isNotNull();
+    cursor.close();
 
     // cursor list with partially null contents
     Cursor[] cursors = new Cursor[2];
