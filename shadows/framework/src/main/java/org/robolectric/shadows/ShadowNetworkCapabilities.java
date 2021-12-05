@@ -22,7 +22,7 @@ public class ShadowNetworkCapabilities {
     return Shadow.newInstanceOf(NetworkCapabilities.class);
   }
 
-  /** Updates the transport types for this network capablities to include {@code transportType}. */
+  /** Updates the transport types for this network capabilities to include {@code transportType}. */
   @HiddenApi
   @Implementation
   public NetworkCapabilities addTransportType(int transportType) {
@@ -30,7 +30,7 @@ public class ShadowNetworkCapabilities {
         .addTransportType(transportType);
   }
 
-  /** Updates the transport types for this network capablities to remove {@code transportType}. */
+  /** Updates the transport types for this network capabilities to remove {@code transportType}. */
   @HiddenApi
   @Implementation
   public NetworkCapabilities removeTransportType(int transportType) {
